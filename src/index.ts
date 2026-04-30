@@ -38,6 +38,7 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { RunningStatusManager } from './running-status.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -54,6 +55,7 @@ let messageLoopRunning = false;
 let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const runningStatus = new RunningStatusManager('실행 중...');
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -188,6 +190,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
+  await runningStatus.show(channel, chatJid);
   let hadError = false;
   let outputSentToUser = false;
 
@@ -202,6 +205,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
+        await runningStatus.clear(channel, chatJid);
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
@@ -219,6 +223,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   });
 
   await channel.setTyping?.(chatJid, false);
+  await runningStatus.clear(channel, chatJid);
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -403,7 +408,13 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-            // Show typing indicator while the container processes the piped message
+            // Show a visible status message and typing indicator while the
+            // already-running container processes the piped message.
+            runningStatus
+              .show(channel, chatJid)
+              .catch((err) =>
+                logger.warn({ chatJid, err }, 'Failed to show running status'),
+              );
             channel
               .setTyping?.(chatJid, true)
               ?.catch((err) =>
@@ -493,14 +504,16 @@ async function main(): Promise<void> {
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text) {
+        await channel.sendMessage(jid, text);
+      }
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: async (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      await channel.sendMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

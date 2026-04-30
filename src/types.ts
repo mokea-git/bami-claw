@@ -52,6 +52,12 @@ export interface NewMessage {
   is_bot_message?: boolean;
 }
 
+export interface SentMessage {
+  id: string;
+  chatJid: string;
+  participant?: string;
+}
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;
@@ -81,7 +87,8 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string): Promise<SentMessage | void>;
+  deleteMessage?(jid: string, message: SentMessage): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

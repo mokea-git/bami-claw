@@ -24,6 +24,7 @@ import {
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
+  SentMessage,
 } from '../types.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -238,7 +239,7 @@ export class WhatsAppChannel implements Channel {
     });
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(jid: string, text: string): Promise<SentMessage | void> {
     // Prefix bot messages with assistant name so users know who's speaking.
     // On a shared number, prefix is also needed in DMs (including self-chat)
     // to distinguish bot output from user messages.
@@ -256,14 +257,43 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      await this.sock.sendMessage(jid, { text: prefixed });
+      const sent = await this.sock.sendMessage(jid, { text: prefixed });
       logger.info({ jid, length: prefixed.length }, 'Message sent');
+      const id = sent?.key?.id;
+      if (id) {
+        return {
+          id,
+          chatJid: sent.key.remoteJid || jid,
+          participant: sent.key.participant || undefined,
+        };
+      }
     } catch (err) {
       // If send fails, queue it for retry on reconnect
       this.outgoingQueue.push({ jid, text: prefixed });
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send, message queued',
+      );
+    }
+  }
+
+  async deleteMessage(jid: string, message: SentMessage): Promise<void> {
+    if (!this.connected) return;
+
+    try {
+      await this.sock.sendMessage(jid, {
+        delete: {
+          remoteJid: message.chatJid || jid,
+          fromMe: true,
+          id: message.id,
+          participant: message.participant,
+        },
+      });
+      logger.debug({ jid, messageId: message.id }, 'Message deleted');
+    } catch (err) {
+      logger.debug(
+        { jid, messageId: message.id, err },
+        'Failed to delete message',
       );
     }
   }
